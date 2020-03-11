@@ -48,7 +48,7 @@ type Query struct {
 }
 
 const (
-	namespace = "oracledb"
+	namespace = "postgresdb"
 	exporter  = "exporter"
 )
 
