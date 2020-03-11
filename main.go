@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/binary"
 	"fmt"
+	"math"
 	"net/http"
 	"os"
 	"strconv"
@@ -163,17 +165,21 @@ func execQuery(database Database, query Query) {
 			} else {
 				switch val := vals[i].(type) {
 				case string:
-					fval, err := strconv.ParseFloat(strings.TrimSpace(val), 64)
+					float, err := strconv.ParseFloat(strings.TrimSpace(vals[i].(string)), 64)
 					if err != nil {
 						logrus.Errorf("Cannot convert value '%s' to float on query '%s': %v", vals[i].(string), query.Name, err)
 						metricMap["error"].WithLabelValues(database.Database, query.Name).Set(1)
 						return
 					}
-					metricMap["value"].WithLabelValues(database.Database, query.Name).Set(fval)
+					metricMap["value"].WithLabelValues(database.Database, query.Name).Set(float)
 				case int64:
-					metricMap["value"].WithLabelValues(database.Database, query.Name).Set(float64(val))
+					metricMap["value"].WithLabelValues(database.Database, query.Name).Set(float64(vals[i].(int64)))
+				case []uint8:
+					bits := binary.LittleEndian.Uint64(val)
+					float := math.Float64frombits(bits)
+					metricMap["value"].WithLabelValues(database.Database, query.Name).Set(float)
 				default:
-					panic("unknown type")
+					logrus.Errorln("Get unsupported type: ", val)
 				}
 
 			}
