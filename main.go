@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"database/sql"
-	"encoding/binary"
 	"fmt"
 	"math"
 	"net/http"
@@ -12,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	_ "github.com/go-sql-driver/mysql"
 	"github.com/jasonlvhit/gocron"
 	"github.com/kkyr/fig"
 	_ "github.com/lib/pq"
@@ -35,6 +35,7 @@ type Database struct {
 	Password     string  `fig:"password"`
 	Database     string  `fig:"database"`
 	Port         string  `fig:"port,default=5432"`
+	Driver       string  `fig:"driver,default=postgres"`
 	MaxIdleConns string  `fig:",default=10"`
 	MaxOpenConns string  `fig:",default=10"`
 	Queries      []Query `fig:"queries"`
@@ -48,7 +49,7 @@ type Query struct {
 }
 
 const (
-	namespace = "postgresdb"
+	namespace = "database"
 	exporter  = "exporter"
 )
 
@@ -68,10 +69,10 @@ func init() {
 	flag.StringVarP(&logFile, "logFile", "l", "stdout", "Log filename (default: stdout)")
 
 	metricMap = map[string]*prometheus.GaugeVec{
-		"value": prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		"query": prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Namespace: namespace,
 			Subsystem: exporter,
-			Name:      "dbmetric",
+			Name:      "query",
 			Help:      "Value of Business metrics from Database",
 		}, []string{"database", "name"}),
 		"error": prometheus.NewGaugeVec(prometheus.GaugeOpts{
@@ -147,7 +148,7 @@ func execQuery(database Database, query Query) {
 			logrus.Fatal(err)
 		}
 	}()
-
+	var rownum int = 1
 	for rows.Next() {
 		for i := range cols {
 			vals[i] = &vals[i]
@@ -160,30 +161,81 @@ func execQuery(database Database, query Query) {
 
 		for i := range cols {
 			metricMap["error"].WithLabelValues(database.Database, query.Name).Set(0)
-			if vals[i] == nil {
-				metricMap["value"].WithLabelValues(database.Database, query.Name).Set(0)
-			} else {
-				switch val := vals[i].(type) {
-				case string:
-					float, err := strconv.ParseFloat(strings.TrimSpace(vals[i].(string)), 64)
-					if err != nil {
-						logrus.Errorf("Cannot convert value '%s' to float on query '%s': %v", vals[i].(string), query.Name, err)
-						metricMap["error"].WithLabelValues(database.Database, query.Name).Set(1)
-						return
-					}
-					metricMap["value"].WithLabelValues(database.Database, query.Name).Set(float)
-				case int64:
-					metricMap["value"].WithLabelValues(database.Database, query.Name).Set(float64(vals[i].(int64)))
-				case []uint8:
-					bits := binary.LittleEndian.Uint64(val)
-					float := math.Float64frombits(bits)
-					metricMap["value"].WithLabelValues(database.Database, query.Name).Set(float)
-				default:
-					logrus.Errorln("Get unsupported type: ", val)
-				}
-
+			float, err := dbToFloat64(vals[i])
+			if err != true {
+				logrus.Errorf("Cannot convert value '%s' to float on query '%s': %v", vals[i].(string), query.Name, err)
+				metricMap["error"].WithLabelValues(database.Database, query.Name).Set(1)
+				return
 			}
+			//metricMap["value"].WithLabelValues(database.Database, query.Name).Set(float)
+			metricMap["query"].With(prometheus.Labels{"database": database.Database, "name": cols[i]}).Set(float)
+			//metricMap["query"].With(prometheus.Labels{"database":database.Database, "name": query.Name}).Set(float)
 		}
+		rownum++
+	}
+}
+
+// Convert database.sql types to float64s for Prometheus consumption. Null types are mapped to NaN. string and []byte
+// types are mapped as NaN and !ok
+func dbToFloat64(t interface{}) (float64, bool) {
+	switch v := t.(type) {
+	case int64:
+		return float64(v), true
+	case float64:
+		return v, true
+	case time.Time:
+		return float64(v.Unix()), true
+	case []byte:
+		// Try and convert to string and then parse to a float64
+		strV := string(v)
+		result, err := strconv.ParseFloat(strV, 64)
+		if err != nil {
+			logrus.Errorln("Could not parse []byte:", err)
+			return math.NaN(), false
+		}
+		return result, true
+	case string:
+		result, err := strconv.ParseFloat(v, 64)
+		if err != nil {
+			logrus.Errorln("Could not parse string:", err)
+			return math.NaN(), false
+		}
+		return result, true
+	case bool:
+		if v {
+			return 1.0, true
+		}
+		return 0.0, true
+	case nil:
+		return math.NaN(), true
+	default:
+		return math.NaN(), false
+	}
+}
+
+// Convert database.sql to string for Prometheus labels. Null types are mapped to empty strings.
+func dbToString(t interface{}) (string, bool) {
+	switch v := t.(type) {
+	case int64:
+		return fmt.Sprintf("%v", v), true
+	case float64:
+		return fmt.Sprintf("%v", v), true
+	case time.Time:
+		return fmt.Sprintf("%v", v.Unix()), true
+	case nil:
+		return "", true
+	case []byte:
+		// Try and convert to string
+		return string(v), true
+	case string:
+		return v, true
+	case bool:
+		if v {
+			return "true", true
+		}
+		return "false", true
+	default:
+		return "", false
 	}
 }
 
@@ -213,9 +265,13 @@ func main() {
 
 	for _, database := range configuration.Databases {
 		// connect to database
-		database.Dsn = fmt.Sprintf("user=%s password=%s host=%s port=%s dbname=%s sslmode=disable", database.User, database.Password, database.Host, database.Port, database.Database)
+		if database.Driver == "postgres" {
+			database.Dsn = fmt.Sprintf("user=%s password=%s host=%s port=%s dbname=%s sslmode=disable", database.User, database.Password, database.Host, database.Port, database.Database)
+		} else {
+			database.Dsn = fmt.Sprintf("%s:%s@tcp(%s:%s)/%s", database.User, database.Password, database.Host, database.Port, database.Database)
+		}
 		logrus.Infoln("Connecting to DB: ", database.Database)
-		database.db, err = sql.Open("postgres", database.Dsn)
+		database.db, err = sql.Open(database.Driver, database.Dsn)
 		if err != nil {
 			logrus.Errorln("Error connecting to db: ", err)
 		}
