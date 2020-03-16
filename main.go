@@ -74,7 +74,7 @@ func init() {
 			Subsystem: exporter,
 			Name:      "query",
 			Help:      "Value of Business metrics from Database",
-		}, []string{"database", "name"}),
+		}, []string{"database", "name", "col"}),
 		"error": prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Namespace: namespace,
 			Subsystem: exporter,
@@ -148,7 +148,6 @@ func execQuery(database Database, query Query) {
 			logrus.Fatal(err)
 		}
 	}()
-	var rownum int = 1
 	for rows.Next() {
 		for i := range cols {
 			vals[i] = &vals[i]
@@ -167,11 +166,8 @@ func execQuery(database Database, query Query) {
 				metricMap["error"].WithLabelValues(database.Database, query.Name).Set(1)
 				return
 			}
-			//metricMap["value"].WithLabelValues(database.Database, query.Name).Set(float)
-			metricMap["query"].With(prometheus.Labels{"database": database.Database, "name": cols[i]}).Set(float)
-			//metricMap["query"].With(prometheus.Labels{"database":database.Database, "name": query.Name}).Set(float)
+			metricMap["query"].With(prometheus.Labels{"database": database.Database, "name": query.Name, "col": cols[i]}).Set(float)
 		}
-		rownum++
 	}
 }
 
@@ -214,30 +210,30 @@ func dbToFloat64(t interface{}) (float64, bool) {
 }
 
 // Convert database.sql to string for Prometheus labels. Null types are mapped to empty strings.
-func dbToString(t interface{}) (string, bool) {
-	switch v := t.(type) {
-	case int64:
-		return fmt.Sprintf("%v", v), true
-	case float64:
-		return fmt.Sprintf("%v", v), true
-	case time.Time:
-		return fmt.Sprintf("%v", v.Unix()), true
-	case nil:
-		return "", true
-	case []byte:
-		// Try and convert to string
-		return string(v), true
-	case string:
-		return v, true
-	case bool:
-		if v {
-			return "true", true
-		}
-		return "false", true
-	default:
-		return "", false
-	}
-}
+//func dbToString(t interface{}) (string, bool) {
+//	switch v := t.(type) {
+//	case int64:
+//		return fmt.Sprintf("%v", v), true
+//	case float64:
+//		return fmt.Sprintf("%v", v), true
+//	case time.Time:
+//		return fmt.Sprintf("%v", v.Unix()), true
+//	case nil:
+//		return "", true
+//	case []byte:
+//		// Try and convert to string
+//		return string(v), true
+//	case string:
+//		return v, true
+//	case bool:
+//		if v {
+//			return "true", true
+//		}
+//		return "false", true
+//	default:
+//		return "", false
+//	}
+//}
 
 func main() {
 	flag.Parse()
@@ -291,7 +287,12 @@ func main() {
 		// create cron jobs for every query on database
 		if err := database.db.Ping(); err == nil {
 			for _, query := range database.Queries {
-				gocron.Every(5).Minutes().DoSafely(execQuery, database, query)
+				if n, err := strconv.Atoi(query.Interval); err == nil {
+					gocron.Every(uint64(n)).Minutes().DoSafely(execQuery, database, query)
+				} else {
+					logrus.Errorln(query.Interval, " is not an integer.")
+				}
+
 			}
 		} else {
 			logrus.Errorf("Error connecting to db '%s': %v", database.Database, err)
