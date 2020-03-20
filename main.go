@@ -49,7 +49,7 @@ type Query struct {
 }
 
 const (
-	namespace = "postresdb"
+	namespace = "postgresdb"
 	exporter  = "exporter"
 )
 
