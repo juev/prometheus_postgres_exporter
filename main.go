@@ -49,7 +49,7 @@ type Query struct {
 }
 
 const (
-	namespace = "database"
+	namespace = "postresdb"
 	exporter  = "exporter"
 )
 
@@ -121,9 +121,8 @@ func execQuery(database Database, query Query) {
 		logrus.Errorf("Error on connect to database '%s': %v", database.Database, err)
 		metricMap["up"].WithLabelValues(database.Database).Set(0)
 		return
-	} else {
-		metricMap["up"].WithLabelValues(database.Database).Set(1)
 	}
+	metricMap["up"].WithLabelValues(database.Database).Set(1)
 
 	// query db
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout)*time.Second)

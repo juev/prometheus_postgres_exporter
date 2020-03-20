@@ -1,4 +1,4 @@
-VERSION        ?= 0.1.5
+VERSION        ?= 0.1.6
 LDFLAGS        := -X main.Version=$(VERSION)
 GOFLAGS        := -ldflags "$(LDFLAGS) -s -w"
 ARCH           ?= $(shell uname -m)
