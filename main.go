@@ -72,7 +72,7 @@ func init() {
 		"query": prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Namespace: namespace,
 			Subsystem: exporter,
-			Name:      "query",
+			Name:      "query_value",
 			Help:      "Value of Business metrics from Database",
 		}, []string{"database", "name", "col"}),
 		"error": prometheus.NewGaugeVec(prometheus.GaugeOpts{
