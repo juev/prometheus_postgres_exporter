@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-co-op/gocron"
 	_ "github.com/go-sql-driver/mysql"
-	"github.com/jasonlvhit/gocron"
 	"github.com/kkyr/fig"
 	_ "github.com/lib/pq"
 	"github.com/prometheus/client_golang/prometheus"
@@ -257,7 +257,7 @@ func main() {
 	if err != nil {
 		logrus.Fatal("error while converting timeout option value: ", err)
 	}
-
+	cron := gocron.NewScheduler(time.UTC)
 	for _, database := range configuration.Databases {
 		// connect to database
 		if database.Driver == "postgres" {
@@ -287,7 +287,7 @@ func main() {
 		if err := database.db.Ping(); err == nil {
 			for _, query := range database.Queries {
 				if n, err := strconv.Atoi(query.Interval); err == nil {
-					gocron.Every(uint64(n)).Minutes().DoSafely(execQuery, database, query)
+					cron.Every(uint64(n)).Minutes().Do(execQuery, database, query)
 				} else {
 					logrus.Errorln(query.Interval, " is not an integer.")
 				}
@@ -298,8 +298,7 @@ func main() {
 		}
 	}
 
-	gocron.Start()
-	gocron.RunAll()
+	cron.StartAsync()
 
 	prometheusConnection := configuration.Host + ":" + configuration.Port
 	logrus.Printf("listen: %s", prometheusConnection)
