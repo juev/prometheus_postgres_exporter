@@ -137,14 +137,14 @@ func execQuery(database Database, query Query) {
 
 	columns, _ := rows.Columns()
 	count := len(columns)
+	values := make([]interface{}, count)
+	valuePtrs := make([]interface{}, count)
+
+	for i := range columns {
+		valuePtrs[i] = &values[i]
+	}
+
 	for rows.Next() {
-		values := make([]interface{}, count)
-		valuePtrs := make([]interface{}, count)
-
-		for i := range columns {
-			valuePtrs[i] = &values[i]
-		}
-
 		err = rows.Scan(valuePtrs...)
 		if err != nil {
 			logrus.Error("Error on scan: ", err)
