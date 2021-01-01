@@ -1,6 +1,6 @@
 module github.com/juev/prometheus_postgres_exporter
 
-go 1.14
+go 1.15
 
 require (
 	github.com/go-co-op/gocron v0.5.0
