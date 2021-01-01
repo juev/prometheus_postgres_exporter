@@ -21,31 +21,34 @@ import (
 	flag "github.com/spf13/pflag"
 )
 
+// Configuration struct
 type Configuration struct {
 	Host         string `fig:"host,default=0.0.0.0"`
-	Port         string `fig:"port,default=9102"`
-	QueryTimeout string `fig:"querytimeout,default=30"`
+	Port         int    `fig:"port,default=9102"`
+	QueryTimeout int    `fig:"querytimeout,default=30"`
 	Databases    []Database
 }
 
+// Database struct
 type Database struct {
 	Dsn          string
 	Host         string  `fig:",default=127.0.0.1"`
 	User         string  `fig:"user"`
 	Password     string  `fig:"password"`
 	Database     string  `fig:"database"`
-	Port         string  `fig:"port,default=5432"`
+	Port         int     `fig:"port,default=5432"`
 	Driver       string  `fig:"driver,default=postgres"`
-	MaxIdleConns string  `fig:",default=10"`
-	MaxOpenConns string  `fig:",default=10"`
+	MaxIdleConns int     `fig:",default=10"`
+	MaxOpenConns int     `fig:",default=10"`
 	Queries      []Query `fig:"queries"`
 	db           *sql.DB
 }
 
+// Query struct
 type Query struct {
-	Sql      string `fig:"sql"`
+	SQL      string `fig:"sql"`
 	Name     string `fig:"name"`
-	Interval string `fig:"interval,default=1"`
+	Interval int    `fig:"interval,default=1"`
 }
 
 const (
@@ -110,7 +113,7 @@ func execQuery(database Database, query Query) {
 	if err := database.db.Ping(); err != nil {
 		if strings.Contains(err.Error(), "sql: database is closed") {
 			logrus.Infoln("Reconnecting to DB: ", database.Database)
-			database.db, _ = sql.Open("oci8", database.Dsn)
+			database.db, _ = sql.Open(database.Driver, database.Dsn)
 			database.db.SetMaxIdleConns(maxIdleConns)
 			database.db.SetMaxOpenConns(maxOpenConns)
 		}
@@ -127,14 +130,14 @@ func execQuery(database Database, query Query) {
 	// query db
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout)*time.Second)
 	defer cancel()
-	rows, err := database.db.QueryContext(ctx, query.Sql)
+	rows, err := database.db.QueryContext(ctx, query.SQL)
 	if ctx.Err() == context.DeadlineExceeded {
-		logrus.Errorf("oracle query '%s' timed out", query.Name)
+		logrus.Errorf("query '%s' timed out", query.Name)
 		metricMap["error"].WithLabelValues(database.Database, query.Name).Set(1)
 		return
 	}
 	if err != nil {
-		logrus.Errorf("oracle query '%s' failed: %v", query.Name, err)
+		logrus.Errorf("query '%s' failed: %v", query.Name, err)
 		metricMap["error"].WithLabelValues(database.Database, query.Name).Set(1)
 		return
 	}
@@ -208,32 +211,6 @@ func dbToFloat64(t interface{}) (float64, bool) {
 	}
 }
 
-// Convert database.sql to string for Prometheus labels. Null types are mapped to empty strings.
-//func dbToString(t interface{}) (string, bool) {
-//	switch v := t.(type) {
-//	case int64:
-//		return fmt.Sprintf("%v", v), true
-//	case float64:
-//		return fmt.Sprintf("%v", v), true
-//	case time.Time:
-//		return fmt.Sprintf("%v", v.Unix()), true
-//	case nil:
-//		return "", true
-//	case []byte:
-//		// Try and convert to string
-//		return string(v), true
-//	case string:
-//		return v, true
-//	case bool:
-//		if v {
-//			return "true", true
-//		}
-//		return "false", true
-//	default:
-//		return "", false
-//	}
-//}
-
 func main() {
 	flag.Parse()
 	if logFile == "stdout" {
@@ -253,45 +230,28 @@ func main() {
 		logrus.Fatal("Fatal error on reading configuration: ", err)
 	}
 
-	timeout, err = strconv.Atoi(configuration.QueryTimeout)
-	if err != nil {
-		logrus.Fatal("error while converting timeout option value: ", err)
-	}
+	timeout = configuration.QueryTimeout
 	cron := gocron.NewScheduler(time.UTC)
 	for _, database := range configuration.Databases {
 		// connect to database
 		if database.Driver == "postgres" {
-			database.Dsn = fmt.Sprintf("user=%s password=%s host=%s port=%s dbname=%s sslmode=disable", database.User, database.Password, database.Host, database.Port, database.Database)
+			database.Dsn = fmt.Sprintf("user=%s password=%s host=%s port=%d dbname=%s sslmode=disable", database.User, database.Password, database.Host, database.Port, database.Database)
 		} else {
-			database.Dsn = fmt.Sprintf("%s:%s@tcp(%s:%s)/%s", database.User, database.Password, database.Host, database.Port, database.Database)
+			database.Dsn = fmt.Sprintf("%s:%s@tcp(%s:%d)/%s", database.User, database.Password, database.Host, database.Port, database.Database)
 		}
 		logrus.Infoln("Connecting to DB: ", database.Database)
 		database.db, err = sql.Open(database.Driver, database.Dsn)
 		if err != nil {
 			logrus.Errorln("Error connecting to db: ", err)
 		}
-		maxIdleConns, err = strconv.Atoi(database.MaxIdleConns)
-		if err != nil {
-			logrus.Fatal("error while converting maxIdleConns option value: ", err)
-		}
 
-		maxOpenConns, err = strconv.Atoi(database.MaxOpenConns)
-		if err != nil {
-			logrus.Fatal("error while converting maxOpenConns option value: ", err)
-		}
-
-		database.db.SetMaxIdleConns(maxOpenConns)
-		database.db.SetMaxOpenConns(maxOpenConns)
+		database.db.SetMaxIdleConns(database.MaxIdleConns)
+		database.db.SetMaxOpenConns(database.MaxOpenConns)
 
 		// create cron jobs for every query on database
 		if err := database.db.Ping(); err == nil {
 			for _, query := range database.Queries {
-				if n, err := strconv.Atoi(query.Interval); err == nil {
-					cron.Every(uint64(n)).Minutes().Do(execQuery, database, query)
-				} else {
-					logrus.Errorln(query.Interval, " is not an integer.")
-				}
-
+				cron.Every(uint64(query.Interval)).Minutes().Do(execQuery, database, query)
 			}
 		} else {
 			logrus.Errorf("Error connecting to db '%s': %v", database.Database, err)
@@ -300,7 +260,7 @@ func main() {
 
 	cron.StartAsync()
 
-	prometheusConnection := configuration.Host + ":" + configuration.Port
+	prometheusConnection := configuration.Host + ":" + strconv.Itoa(configuration.Port)
 	logrus.Printf("listen: %s", prometheusConnection)
 	http.Handle("/metrics", promhttp.Handler())
 	err = http.ListenAndServe(prometheusConnection, nil)
