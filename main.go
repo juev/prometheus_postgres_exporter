@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"os"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/go-co-op/gocron"
@@ -23,23 +22,23 @@ import (
 
 // Configuration struct
 type Configuration struct {
-	Host         string `fig:"host,default=0.0.0.0"`
-	Port         int    `fig:"port,default=9102"`
-	QueryTimeout int    `fig:"querytimeout,default=30"`
+	Host         string `fig:"host" default:"0.0.0.0"`
+	Port         int    `fig:"port" default:"9102"`
+	QueryTimeout int    `fig:"querytimeout" default:"30"`
 	Databases    []Database
 }
 
 // Database struct
 type Database struct {
 	Dsn          string
-	Host         string  `fig:",default=127.0.0.1"`
+	Host         string  `fig:"host" default:"127.0.0.1"`
 	User         string  `fig:"user"`
 	Password     string  `fig:"password"`
 	Database     string  `fig:"database"`
-	Port         int     `fig:"port,default=5432"`
-	Driver       string  `fig:"driver,default=postgres"`
-	MaxIdleConns int     `fig:",default=10"`
-	MaxOpenConns int     `fig:",default=10"`
+	Port         int     `fig:"port" default:"5432"`
+	Driver       string  `fig:"driver" default:"postgres"`
+	MaxIdleConns int     `fig:"" default:"10"`
+	MaxOpenConns int     `fig:"" default:"10"`
 	Queries      []Query `fig:"queries"`
 	db           *sql.DB
 }
@@ -48,7 +47,7 @@ type Database struct {
 type Query struct {
 	SQL      string `fig:"sql"`
 	Name     string `fig:"name"`
-	Interval int    `fig:"interval,default=1"`
+	Interval int    `fig:"interval" default:"1"`
 }
 
 const (
@@ -77,7 +76,7 @@ func init() {
 			Subsystem: exporter,
 			Name:      "query_value",
 			Help:      "Value of Business metrics from Database",
-		}, []string{"database", "name", "col"}),
+		}, []string{"database", "name", "column"}),
 		"error": prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Namespace: namespace,
 			Subsystem: exporter,
@@ -111,103 +110,95 @@ func execQuery(database Database, query Query) {
 
 	// Reconnect if we lost connection
 	if err := database.db.Ping(); err != nil {
-		if strings.Contains(err.Error(), "sql: database is closed") {
-			logrus.Infoln("Reconnecting to DB: ", database.Database)
-			database.db, _ = sql.Open(database.Driver, database.Dsn)
-			database.db.SetMaxIdleConns(maxIdleConns)
-			database.db.SetMaxOpenConns(maxOpenConns)
+		logrus.Infoln("Reconnecting to DB: ", database.Database)
+		database.db, err = sql.Open(database.Driver, database.Dsn)
+		if err != nil {
+			logrus.Errorln("Error reconnecting to db: ", err)
+			metricMap["up"].WithLabelValues(database.Database).Set(0)
+			metricMap["error"].WithLabelValues(database.Database, query.Name).Set(1)
+			return
 		}
-	}
-
-	// Validate connection
-	if err := database.db.Ping(); err != nil {
-		logrus.Errorf("Error on connect to database '%s': %v", database.Database, err)
-		metricMap["up"].WithLabelValues(database.Database).Set(0)
-		return
+		database.db.SetMaxIdleConns(database.MaxIdleConns)
+		database.db.SetMaxOpenConns(database.MaxOpenConns)
 	}
 	metricMap["up"].WithLabelValues(database.Database).Set(1)
 
 	// query db
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout)*time.Second)
 	defer cancel()
+
 	rows, err := database.db.QueryContext(ctx, query.SQL)
-	if ctx.Err() == context.DeadlineExceeded {
-		logrus.Errorf("query '%s' timed out", query.Name)
-		metricMap["error"].WithLabelValues(database.Database, query.Name).Set(1)
-		return
-	}
 	if err != nil {
 		logrus.Errorf("query '%s' failed: %v", query.Name, err)
 		metricMap["error"].WithLabelValues(database.Database, query.Name).Set(1)
 		return
 	}
+	defer rows.Close()
 
-	cols, _ := rows.Columns()
-	vals := make([]interface{}, len(cols))
-	defer func() {
-		err := rows.Close()
-		if err != nil {
-			logrus.Fatal(err)
-		}
-	}()
+	columns, _ := rows.Columns()
+	count := len(columns)
 	for rows.Next() {
-		for i := range cols {
-			vals[i] = &vals[i]
+		values := make([]interface{}, count)
+		valuePtrs := make([]interface{}, count)
+
+		for i := range columns {
+			valuePtrs[i] = &values[i]
 		}
 
-		err = rows.Scan(vals...)
+		err = rows.Scan(valuePtrs...)
 		if err != nil {
+			logrus.Error("Error on scan: ", err)
 			break
 		}
 
-		for i := range cols {
+		for i, column := range columns {
 			metricMap["error"].WithLabelValues(database.Database, query.Name).Set(0)
-			float, err := dbToFloat64(vals[i])
-			if err != true {
-				logrus.Errorf("Cannot convert value '%s' to float on query '%s': %v", vals[i].(string), query.Name, err)
+			float, err := dbToFloat64(values[i])
+			if err != nil {
+				logrus.Errorf("Cannot convert value '%s' to float on query '%s': %v", values[i].(string), query.Name, err)
 				metricMap["error"].WithLabelValues(database.Database, query.Name).Set(1)
 				return
 			}
-			metricMap["query"].With(prometheus.Labels{"database": database.Database, "name": query.Name, "col": cols[i]}).Set(float)
+			metricMap["query"].With(prometheus.Labels{"database": database.Database, "name": query.Name, "column": column}).Set(float)
 		}
 	}
 }
 
 // Convert database.sql types to float64s for Prometheus consumption. Null types are mapped to NaN. string and []byte
 // types are mapped as NaN and !ok
-func dbToFloat64(t interface{}) (float64, bool) {
+func dbToFloat64(t interface{}) (float64, error) {
 	switch v := t.(type) {
 	case int64:
-		return float64(v), true
+		return float64(v), nil
 	case float64:
-		return v, true
+		return v, nil
 	case time.Time:
-		return float64(v.Unix()), true
+		return float64(v.Unix()), nil
 	case []byte:
 		// Try and convert to string and then parse to a float64
 		strV := string(v)
 		result, err := strconv.ParseFloat(strV, 64)
 		if err != nil {
 			logrus.Errorln("Could not parse []byte:", err)
-			return math.NaN(), false
+			return math.NaN(), err
 		}
-		return result, true
+		return result, nil
 	case string:
 		result, err := strconv.ParseFloat(v, 64)
 		if err != nil {
 			logrus.Errorln("Could not parse string:", err)
-			return math.NaN(), false
+			return math.NaN(), err
 		}
-		return result, true
+		return result, nil
 	case bool:
 		if v {
-			return 1.0, true
+			return 1.0, nil
 		}
-		return 0.0, true
+		return 0.0, nil
 	case nil:
-		return math.NaN(), true
+		return math.NaN(), nil
 	default:
-		return math.NaN(), false
+		return math.NaN(), err
 	}
 }
 
@@ -239,7 +230,7 @@ func main() {
 		} else {
 			database.Dsn = fmt.Sprintf("%s:%s@tcp(%s:%d)/%s", database.User, database.Password, database.Host, database.Port, database.Database)
 		}
-		logrus.Infoln("Connecting to DB: ", database.Database)
+		logrus.Infoln("Connecting to DB:", database.Database)
 		database.db, err = sql.Open(database.Driver, database.Dsn)
 		if err != nil {
 			logrus.Errorln("Error connecting to db: ", err)
