@@ -76,19 +76,19 @@ func init() {
 			Subsystem: exporter,
 			Name:      "query_value",
 			Help:      "Value of Business metrics from Database",
-		}, []string{"database", "name", "column"}),
+		}, []string{"database", "query", "column"}),
 		"error": prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Namespace: namespace,
 			Subsystem: exporter,
 			Name:      "query_error",
 			Help:      "Result of last query, 1 if we have errors on running query",
-		}, []string{"database", "name"}),
+		}, []string{"database", "query", "column"}),
 		"duration": prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Namespace: namespace,
 			Subsystem: exporter,
 			Name:      "query_duration_seconds",
 			Help:      "Duration of the query in seconds",
-		}, []string{"database", "name"}),
+		}, []string{"database", "query"}),
 		"up": prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Namespace: namespace,
 			Subsystem: exporter,
@@ -115,7 +115,7 @@ func execQuery(database Database, query Query) {
 		if err != nil {
 			logrus.Errorln("Error reconnecting to db: ", err)
 			metricMap["up"].WithLabelValues(database.Database).Set(0)
-			metricMap["error"].WithLabelValues(database.Database, query.Name).Set(1)
+			metricMap["error"].WithLabelValues(database.Database, query.Name, "").Set(1)
 			return
 		}
 		database.db.SetMaxIdleConns(database.MaxIdleConns)
@@ -130,7 +130,7 @@ func execQuery(database Database, query Query) {
 	rows, err := database.db.QueryContext(ctx, query.SQL)
 	if err != nil {
 		logrus.Errorf("query '%s' failed: %v", query.Name, err)
-		metricMap["error"].WithLabelValues(database.Database, query.Name).Set(1)
+		metricMap["error"].WithLabelValues(database.Database, query.Name, "").Set(1)
 		return
 	}
 	defer rows.Close()
@@ -152,14 +152,14 @@ func execQuery(database Database, query Query) {
 		}
 
 		for i, column := range columns {
-			metricMap["error"].WithLabelValues(database.Database, query.Name).Set(0)
+			metricMap["error"].WithLabelValues(database.Database, query.Name, column).Set(0)
 			float, err := dbToFloat64(values[i])
 			if err != nil {
 				logrus.Errorf("Cannot convert value '%s' to float on query '%s': %v", values[i].(string), query.Name, err)
-				metricMap["error"].WithLabelValues(database.Database, query.Name).Set(1)
+				metricMap["error"].WithLabelValues(database.Database, query.Name, column).Set(1)
 				return
 			}
-			metricMap["query"].With(prometheus.Labels{"database": database.Database, "name": query.Name, "column": column}).Set(float)
+			metricMap["query"].With(prometheus.Labels{"database": database.Database, "query": query.Name, "column": column}).Set(float)
 		}
 	}
 }
