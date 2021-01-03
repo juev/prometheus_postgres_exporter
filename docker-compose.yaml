@@ -1,18 +1,33 @@
 # Use postgres/example user/password credentials
+# for oracle: oracle
 version: '3.1'
 
 services:
 
-  db:
+  postgres:
     image: postgres
     restart: always
     environment:
       POSTGRES_PASSWORD: example
     ports:
       - 5432:5432
+    volumes:
+      - postgres:/var/lib/postgresql
+
+  oracle-db:
+    image: oracleinanutshell/oracle-xe-11g:latest
+    ports:
+      - 1521:1521
+      - 5500:5500
+    volumes:
+      - oracle:/u01/app/oracle
 
   adminer:
     image: adminer
     restart: always
     ports:
       - 8080:8080
+
+volumes:
+  postgres:
+  oracle:
